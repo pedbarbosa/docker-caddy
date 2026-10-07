@@ -7,4 +7,6 @@ RUN xcaddy build \
 
 FROM caddy:latest
 
+RUN apk upgrade --no-cache
+
 COPY --from=builder /usr/bin/caddy /usr/bin/caddy
