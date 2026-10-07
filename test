@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# Image tests, run by docker-image-refresh after building a new image and
+# before tagging it 'latest'. Usage: ./test <image>
+
+# The check functions are called indirectly, through 'check'
+# shellcheck disable=SC2329
+
+set -euo pipefail
+
+if [ $# -ne 1 ]; then
+    echo "Usage: $0 <image>" >&2
+    exit 2
+fi
+IMAGE=$1
+# Well-formed but fake, validation checks the token's format and never uses it
+DUMMY_CF_TOKEN=$(printf 'x%.0s' {1..40})
+
+FAILED=0
+CONTAINER="caddy-test-$$"
+
+cleanup() {
+    docker rm --force "$CONTAINER" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+in_image() {
+    docker run --rm "$IMAGE" "$@"
+}
+
+check() {
+    local name=$1 output
+    shift
+    if output=$("$@" 2>&1); then
+        echo "PASS: $name"
+    else
+        echo "FAIL: $name"
+        [ -z "$output" ] || echo "    ${output//$'\n'/$'\n'    }"
+        FAILED=1
+    fi
+}
+
+caddy_runs() {
+    in_image caddy version
+}
+
+has_cloudflare_module() {
+    in_image caddy list-modules | grep -x 'dns.providers.cloudflare'
+}
+
+# Loads and provisions the Cloudflare DNS module, not just parses the config
+validates_cloudflare_config() {
+    printf '{\n\tacme_dns cloudflare %s\n}\n\n:80 {\n\trespond "ok"\n}\n' "$DUMMY_CF_TOKEN" \
+        | docker run --rm -i "$IMAGE" caddy validate --adapter caddyfile --config /dev/stdin
+}
+
+# Starts the image as it ships, with its default command and Caddyfile
+serves_default_site() {
+    local status=1
+    docker run --detach --name "$CONTAINER" "$IMAGE" >/dev/null || return 1
+    for _ in {1..15}; do
+        if docker exec "$CONTAINER" wget -qO- http://localhost/ 2>/dev/null | grep -q 'Caddy works!'; then
+            status=0
+            break
+        fi
+        sleep 2
+    done
+    [ "$status" -eq 0 ] || docker logs --tail 20 "$CONTAINER"
+    cleanup
+    return "$status"
+}
+
+has_tzdata() {
+    in_image apk info -e tzdata
+}
+
+# Fails when Alpine's repositories can't be reached, as well as when
+# packages are out of date
+packages_up_to_date() {
+    local output
+    output=$(in_image apk upgrade --no-cache --simulate 2>&1) || { echo "$output"; return 1; }
+    ! grep 'Upgrading' <<<"$output"
+}
+
+echo "Testing '$IMAGE' ..."
+check "caddy runs" caddy_runs
+check "Cloudflare DNS module is included" has_cloudflare_module
+check "config using Cloudflare DNS validates" validates_cloudflare_config
+check "serves the default site" serves_default_site
+check "tzdata is installed" has_tzdata
+check "Alpine packages are up to date" packages_up_to_date
+
+exit $FAILED
