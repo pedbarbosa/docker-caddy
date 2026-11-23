@@ -5,8 +5,8 @@ name: Publish image
 # built into Caddy
 on:
   schedule:
-    # Daily at 04:13 in Brisbane, staggered with the other docker-* repos to publish by 05:00
-    - cron: "13 4 * * *"
+    # Daily at 00:02 in Brisbane
+    - cron: "02 0 * * *"
       timezone: "Australia/Brisbane"
   workflow_dispatch:
     inputs:
